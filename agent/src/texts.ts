@@ -15,15 +15,17 @@ export function voucherText(p: { chainId: number; escrow: Address; channelId: bi
   ].join("\n");
 }
 
-export function providerText(p: { chainId: number; escrow: Address; owner: Address; provider: Address; allowed: boolean; nonce: bigint }): string {
+/** Owner approval of (provider, voucher signer); voucherSigner = 0x0…0 revokes. */
+export function providerText(p: { chainId: number; escrow: Address; owner: Address; provider: Address; voucherSigner: Address; nonce: bigint; deadline: bigint }): string {
   return [
     "Tollgate provider v1",
     `chain: ${p.chainId}`,
     `escrow: ${lower(p.escrow)}`,
     `owner: ${lower(p.owner)}`,
     `provider: ${lower(p.provider)}`,
-    `allowed: ${p.allowed}`,
+    `voucher signer: ${lower(p.voucherSigner)}`,
     `nonce: ${p.nonce}`,
+    `valid until: ${p.deadline}`,
   ].join("\n");
 }
 

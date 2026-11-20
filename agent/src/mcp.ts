@@ -3,26 +3,27 @@
  * through ML-DSA-87 payment channels, with on-chain limits the model cannot override.
  *
  * Tools
- *   tollgate_status        channel deposit / paid / spent, limits, provider
- *   tollgate_open_channel  open (or top up) a channel to the configured provider, AS the owner's account,
- *                          through the linked agent key (MsgExecuteEVM; spending rule enforced by the chain)
- *   tollgate_fetch         a paid GET against the provider, with the provider's ML-DSA-87 receipt verified
+ *   tollgate_status        channel deposit / settled / spent, price, provider
+ *   tollgate_open_channel  open a channel to the configured provider AS the owner's account, through the linked
+ *                          agent key (MsgExecuteEVM; the chain enforces the owner's spending rule)
+ *   tollgate_fetch         a paid GET against the provider's /v1/ API, with its ML-DSA-87 receipt verified
  *
- * What the model CANNOT do, whatever it is told: pay a provider the owner did not allowlist with an ML-DSA-87
- * signature, exceed the per-tx / daily caps, call anything but the escrow's open/topUp/startExit/finalizeExit,
- * or touch the owner's keys (it never has them).
+ * What the model CANNOT do, whatever it is told: pay a provider the owner did not approve with an ML-DSA-87
+ * signature, choose the voucher signer, exceed the per-tx / daily caps, call anything but the escrow's
+ * open/topUp/startExit/finalizeExit, or touch the owner's keys: this process only knows the owner's ADDRESS.
  *
- * Env (agent/.env): TG_OWNER_MNEMONIC (only its PUBLIC address is used), TG_VOUCHER_MNEMONIC,
- * TG_AGENT_ED25519, RELAYER_MNEMONIC, TOLLGATE_ESCROW, TOLLGATE_PROVIDER, TOLLGATE_PROVIDER_URL,
+ * Env (agent/.env, all required, nothing is generated): TG_OWNER_EVM (public address), TG_AGENT_ED25519,
+ * TG_VOUCHER_MNEMONIC, RELAYER_MNEMONIC, TOLLGATE_ESCROW, TOLLGATE_PROVIDER, TOLLGATE_PROVIDER_URL,
  * TOLLGATE_PRICE_WEI, optional TOLLGATE_CHANNEL.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { formatEther, getAddress, parseEther, type Address, type Hex } from "viem";
+import { bytesToBech32 } from "@qorechain/sdk";
 import { fileURLToPath } from "node:url";
+import { formatEther, getAddress, hexToBytes, parseEther, type Address, type Hex } from "viem";
 import { z } from "zod";
 import { TollgateAgent } from "./agent.ts";
-import { accountFromEnv, publicClient } from "./chain.ts";
+import { publicClient, requireAccount } from "./chain.ts";
 import { escrowAbi } from "./escrow.ts";
 
 const need = (k: string) => {
@@ -34,24 +35,24 @@ const need = (k: string) => {
 const escrow = getAddress(need("TOLLGATE_ESCROW"));
 const provider = getAddress(need("TOLLGATE_PROVIDER"));
 const providerUrl = need("TOLLGATE_PROVIDER_URL").replace(/\/$/, "");
-const priceWei = BigInt(process.env.TOLLGATE_PRICE_WEI ?? parseEther("0.001").toString());
+const priceWei = BigInt(need("TOLLGATE_PRICE_WEI"));
 let channelId = process.env.TOLLGATE_CHANNEL ? BigInt(process.env.TOLLGATE_CHANNEL) : undefined;
+const ownerEvm = getAddress(need("TG_OWNER_EVM"));
 
-const owner = await accountFromEnv("TG_OWNER_MNEMONIC"); // only the public address is used here
 const agent = new TollgateAgent({
   escrow,
-  owner: { cosmos: owner.cosmos, evm: getAddress(owner.evm) },
+  owner: { evm: ownerEvm, cosmos: bytesToBech32(hexToBytes(ownerEvm), "qor") },
   ed25519PrivateKey: need("TG_AGENT_ED25519") as Hex,
-  voucher: await accountFromEnv("TG_VOUCHER_MNEMONIC"),
-  relayer: await accountFromEnv("RELAYER_MNEMONIC"),
+  voucher: await requireAccount("TG_VOUCHER_MNEMONIC"),
+  relayer: await requireAccount("RELAYER_MNEMONIC"),
   statePath: fileURLToPath(new URL("../agent-vouchers.json", import.meta.url)),
 });
 
 const text = (o: unknown) => ({ content: [{ type: "text" as const, text: typeof o === "string" ? o : JSON.stringify(o, null, 2) }] });
 
-const server = new McpServer({ name: "tollgate", version: "0.1.0" });
+const server = new McpServer({ name: "tollgate", version: "0.2.0" });
 
-server.tool("tollgate_status", "Show the payment channel: deposit, paid on chain, spent off chain, price per call.", {}, async () => {
+server.tool("tollgate_status", "Show the payment channel: deposit, settled on chain, spent by vouchers, price per call.", {}, async () => {
   if (channelId === undefined) return text("No channel yet. Use tollgate_open_channel.");
   const c = (await publicClient.readContract({ address: escrow, abi: escrowAbi, functionName: "channel", args: [channelId] })) as {
     deposit: bigint; paid: bigint; closed: boolean; exitAt: bigint; provider: Address;
@@ -71,8 +72,8 @@ server.tool("tollgate_status", "Show the payment channel: deposit, paid on chain
 
 server.tool(
   "tollgate_open_channel",
-  "Open a pay-per-call channel to the configured provider with a QOR deposit. Spends from the owner's account through the linked agent key; the chain enforces the owner's per-transaction and daily limits and only allows owner-approved providers.",
-  { deposit_qor: z.string().describe("Deposit in QOR, e.g. \"0.2\"") },
+  "Open a new pay-per-call channel to the configured provider with a QOR deposit. Spends from the owner's account through the linked agent key; the chain enforces the owner's per-transaction and daily limits, and only owner-approved providers can be paid.",
+  { deposit_qor: z.string().regex(/^\d+(\.\d+)?$/).describe('Deposit in QOR, e.g. "0.2"') },
   async ({ deposit_qor }) => {
     const out = await agent.openChannel(provider, parseEther(deposit_qor));
     if (!out.result.success || out.channelId === undefined) {
@@ -85,13 +86,15 @@ server.tool(
 
 server.tool(
   "tollgate_fetch",
-  "Call the paid API (GET <provider>/<path>). Pays one ML-DSA-87 voucher per call and verifies the provider's ML-DSA-87 receipt over the response.",
-  { path: z.string().describe("Path and query, e.g. \"/v1/pq-status?address=0x…\"") },
+  "Call the provider's paid API: GET <provider>/v1/<…>. Pays one ML-DSA-87 voucher per call and verifies the provider's ML-DSA-87 receipt over the response.",
+  { path: z.string().describe('A /v1/ path and query, e.g. "/v1/pq-status?address=0x…"') },
   async ({ path }) => {
     if (channelId === undefined) return text("No channel yet. Use tollgate_open_channel first.");
-    const r = await agent.fetch(`${providerUrl}${path.startsWith("/") ? path : `/${path}`}`, { id: channelId, provider, priceWei });
-    if (!r.ok) return text({ ok: false, status: r.status, body: r.body });
-    return text({ ok: true, receipt_verified: r.receiptValid, paid_total_qor: formatEther(r.cumulative), body: JSON.parse(r.body) });
+    if (!path.startsWith("/v1/")) return text("Only paid /v1/ endpoints of the configured provider are allowed.");
+    const r = await agent.fetch(`${providerUrl}${path}`, { id: channelId, provider, priceWei });
+    if (!r.ok) return text({ ok: false, status: r.status, reason: r.reason, body: r.body });
+    if (!r.receiptValid) return text({ ok: false, paid_total_qor: formatEther(r.cumulative), reason: "provider receipt did NOT verify: do not trust this response", body: r.body });
+    return text({ ok: true, receipt_verified: true, paid_total_qor: formatEther(r.cumulative), body: JSON.parse(r.body) });
   },
 );
 

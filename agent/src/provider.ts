@@ -3,18 +3,23 @@
  *
  *  - Request header  `x-tollgate-voucher: <channelId>.<cumulativeWei>.<base64 ML-DSA-87 signature>`
  *  - Without a valid voucher the API answers 402 with its price and escrow.
- *  - Every paid response carries `x-tollgate-receipt`: the provider's ML-DSA-87 signature binding
- *    (channel, cumulative, sha256(body)), i.e. authenticated messaging the agent can verify.
- *  - Settlement: `claimLatest()` submits the highest voucher on chain (one tx for any number of calls).
+ *  - Every paid response carries `x-tollgate-receipt` (the provider's ML-DSA-87 signature binding channel,
+ *    cumulative and sha256(body)) and `x-tollgate-cumulative` (the voucher amount it consumed).
+ *  - Vouchers are verified against the key PINNED at open (its hash is stored in the channel). The provider
+ *    caches that key from its first verification and persists it next to the vouchers, so a payer rotating the
+ *    voucher account's key afterwards cannot void earned vouchers.
+ *  - Channel state is re-read at most every 2 s (and on demand), exits are watched and auto-claimed; requests
+ *    for the same channel are serialised; the latest voucher is persisted to disk before answering.
+ *  - `watchExits()` claims automatically as soon as a payer starts an exit on one of our channels.
  *
- * The paid endpoint is a small "Q-Day readiness oracle": GET /v1/pq-status?address=0x… returns the
- * account's ML-DSA-87 key status straight from the pqcKeyStatus precompile.
+ * Demo endpoint: GET /v1/pq-status?address=0x… (a Q-Day readiness oracle backed by the pqcKeyStatus precompile).
  */
 import { mldsa87 } from "@qorechain/pqc";
 import type { UnifiedAccount } from "@qorechain/sdk";
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { getAddress, hexToBytes, keccak256, type Address, type Hex } from "viem";
+import { getAddress, hexToBytes, keccak256, toHex, type Address, type Hex } from "viem";
 import { FEES, NET, pqcKeyOf, publicClient, walletFor } from "./chain.ts";
 import { escrowAbi } from "./escrow.ts";
 import { qoreSignBytes, receiptText, voucherText } from "./texts.ts";
@@ -35,22 +40,48 @@ export interface ProviderOptions {
   escrow: Address;
   priceWei: bigint;
   port?: number;
+  /** Where to persist the latest voucher per channel (survives restarts). */
+  vouchersPath?: string;
+  /** Max age of cached channel state (deposit, exit, close). Exits are also caught by watchExits(). Default 2 s. */
+  refreshMs?: number;
 }
+
+type Voucher = { cumulative: bigint; sig: Uint8Array };
 
 export class TollgateProvider {
   readonly address: Address;
   private server?: Server;
-  private channels = new Map<string, { info: ChannelInfo; voucherKey: Uint8Array }>();
-  private latest = new Map<string, { cumulative: bigint; sig: Uint8Array }>();
+  private keys = new Map<string, Uint8Array>(); // channel -> pinned voucher key
+  private latest = new Map<string, Voucher>();
+  private state = new Map<string, { at: number; info: ChannelInfo }>(); // channel state, refreshed every refreshMs
+  private locks = new Map<string, Promise<unknown>>();
   private cache = new Map<string, { at: number; body: unknown }>();
-  stats = { paidCalls: 0, rejected: 0 };
+  private unwatch?: () => void;
+  stats = { paidCalls: 0, rejected: 0, autoClaims: [] as Hex[] };
 
   constructor(private readonly opts: ProviderOptions) {
     this.address = getAddress(opts.account.evm);
+    if (opts.vouchersPath && existsSync(opts.vouchersPath)) {
+      const saved = JSON.parse(readFileSync(opts.vouchersPath, "utf8")) as Record<string, { cumulative: string; sig: string; key?: string }>;
+      for (const [k, v] of Object.entries(saved)) {
+        this.latest.set(k, { cumulative: BigInt(v.cumulative), sig: Uint8Array.from(Buffer.from(v.sig, "base64")) });
+        if (v.key) this.keys.set(k, Uint8Array.from(Buffer.from(v.key, "base64")));
+      }
+    }
   }
 
   latestVoucher(channelId: bigint) {
     return this.latest.get(channelId.toString());
+  }
+
+  private persist() {
+    if (!this.opts.vouchersPath) return;
+    const out: Record<string, { cumulative: string; sig: string; key?: string }> = {};
+    for (const [k, v] of this.latest) {
+      const key = this.keys.get(k);
+      out[k] = { cumulative: v.cumulative.toString(), sig: Buffer.from(v.sig).toString("base64"), ...(key ? { key: Buffer.from(key).toString("base64") } : {}) };
+    }
+    writeFileSync(this.opts.vouchersPath, JSON.stringify(out));
   }
 
   async listen(): Promise<number> {
@@ -71,7 +102,42 @@ export class TollgateProvider {
   }
 
   close() {
+    this.unwatch?.();
     this.server?.close();
+  }
+
+  /**
+   * Claim automatically when a payer starts an exit on a channel we hold unsettled vouchers for.
+   * Polls CHANNEL STATE, not events: exits started through x/abstractaccount MsgExecuteEVM emit logs that
+   * eth_getLogs does not index on QoreChain today (found in our first live run, where an event watcher missed it).
+   */
+  watchExits(pollMs = 3000) {
+    let busy = false;
+    const timer = setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        for (const [k, v] of this.latest) {
+          const id = BigInt(k);
+          const info = await this.channelState(id, true);
+          if (info.closed || info.exitAt === 0n || v.cumulative <= info.paid) continue;
+          const r = await this.withLock(k, () => this.claimLatest(id));
+          if (r) this.stats.autoClaims.push(r.hash);
+        }
+      } catch (e) {
+        console.error("exit watcher:", (e as Error).message);
+      } finally {
+        busy = false;
+      }
+    }, pollMs);
+    this.unwatch = () => clearInterval(timer);
+  }
+
+  private withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(key) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    this.locks.set(key, next.catch(() => undefined));
+    return next;
   }
 
   private paymentRequired(reason: string) {
@@ -91,16 +157,40 @@ export class TollgateProvider {
     };
   }
 
-  private async channel(id: bigint) {
-    const key = id.toString();
-    const known = this.channels.get(key);
-    if (known) return known;
+  /** Channel state, re-read from chain when older than refreshMs (top-ups, exits and closes are seen within that). */
+  private async channelState(id: bigint, force = false): Promise<ChannelInfo> {
+    const k = id.toString();
+    const hit = this.state.get(k);
+    if (!force && hit && Date.now() - hit.at < (this.opts.refreshMs ?? 2000)) return hit.info;
     const info = (await publicClient.readContract({ address: this.opts.escrow, abi: escrowAbi, functionName: "channel", args: [id] })) as ChannelInfo;
+    this.state.set(k, { at: Date.now(), info });
+    return info;
+  }
+
+  /** The voucher key pinned at open, from the ChannelOpened event (checked against the stored hash). */
+  private async pinnedKey(id: bigint, info: ChannelInfo): Promise<Uint8Array> {
+    const k = id.toString();
+    const known = this.keys.get(k);
+    if (known) return known;
+    // Fast path: the voucher account's current registry key, if it is still the pinned one.
     const st = await pqcKeyOf(info.voucherSigner);
-    if (!st.registered || !st.possessionProven || keccak256(st.pubkey) !== info.keyHash) throw new Error("voucher key mismatch");
-    const entry = { info, voucherKey: hexToBytes(st.pubkey) };
-    this.channels.set(key, entry);
-    return entry;
+    let key: Hex | undefined = st.registered && keccak256(st.pubkey) === info.keyHash ? st.pubkey : undefined;
+    // Rotated or deregistered since open: recover the pinned key from the ChannelOpened event (bounded chunks).
+    // Note: logs emitted inside x/abstractaccount MsgExecuteEVM are not indexed by eth_getLogs today, which is why
+    // the provider caches and persists the pinned key from the FIRST voucher it verifies (see persist()).
+    if (!key) {
+      const head = await publicClient.getBlockNumber();
+      for (let to = head, i = 0; i < 30 && !key; i++, to -= 10_000n) {
+        const from = to > 9_999n ? to - 9_999n : 0n;
+        const logs = await publicClient.getContractEvents({ address: this.opts.escrow, abi: escrowAbi, eventName: "ChannelOpened", args: { id }, fromBlock: from, toBlock: to });
+        key = (logs[0] as unknown as { args: { voucherKey: Hex } } | undefined)?.args.voucherKey;
+        if (from === 0n) break;
+      }
+    }
+    if (!key || keccak256(key) !== info.keyHash) throw new Error("pinned voucher key not found");
+    const bytes = hexToBytes(key);
+    this.keys.set(k, bytes);
+    return bytes;
   }
 
   private async handle(url: string, voucher?: string) {
@@ -118,21 +208,36 @@ export class TollgateProvider {
     } catch {
       return this.paymentRequired("malformed voucher");
     }
-    let ch;
-    try {
-      ch = await this.channel(channelId);
-    } catch (e) {
-      return this.paymentRequired(`unknown or invalid channel: ${(e as Error).message}`);
-    }
-    if (ch.info.closed || ch.info.exitAt !== 0n) return this.paymentRequired("channel closed or exiting");
-    if (getAddress(ch.info.provider) !== this.address) return this.paymentRequired("channel is for another provider");
-    const prev = this.latest.get(channelId.toString())?.cumulative ?? ch.info.paid;
-    if (cumulative < prev + this.opts.priceWei) return this.paymentRequired(`voucher must cover at least ${prev + this.opts.priceWei} wei`);
-    if (cumulative > ch.info.deposit) return this.paymentRequired("voucher exceeds deposit; top up");
     const sig = Uint8Array.from(Buffer.from(sigB64 ?? "", "base64"));
-    const msg = qoreSignBytes(voucherText({ chainId: NET.evmChainId, escrow: this.opts.escrow, channelId, provider: this.address, cumulativeWei: cumulative }));
-    if (!mldsa87.verify(ch.voucherKey, msg, sig)) return this.paymentRequired("bad voucher signature");
-    this.latest.set(channelId.toString(), { cumulative, sig });
+    const accepted = await this.withLock(channelId.toString(), async () => {
+      let info: ChannelInfo;
+      try {
+        info = await this.channelState(channelId);
+      } catch {
+        return "unknown channel";
+      }
+      if (info.closed || info.exitAt !== 0n) return "channel closed or exiting";
+      if (getAddress(info.provider) !== this.address) return "channel is for another provider";
+      const prev = this.latest.get(channelId.toString())?.cumulative ?? info.paid;
+      const floor = prev > info.paid ? prev : info.paid;
+      if (cumulative < floor + this.opts.priceWei) return `voucher must cover at least ${floor + this.opts.priceWei} wei`;
+      if (cumulative > info.deposit) {
+        info = await this.channelState(channelId, true); // maybe topped up since the last refresh
+        if (cumulative > info.deposit) return "voucher exceeds deposit; top up";
+      }
+      let key: Uint8Array;
+      try {
+        key = await this.pinnedKey(channelId, info);
+      } catch (e) {
+        return (e as Error).message;
+      }
+      const msg = qoreSignBytes(voucherText({ chainId: NET.evmChainId, escrow: this.opts.escrow, channelId, provider: this.address, cumulativeWei: cumulative }));
+      if (!mldsa87.verify(key, msg, sig)) return "bad voucher signature";
+      this.latest.set(channelId.toString(), { cumulative, sig });
+      this.persist(); // durable before we answer
+      return true;
+    });
+    if (accepted !== true) return this.paymentRequired(accepted);
     this.stats.paidCalls++;
 
     // ---- the paid work: a Q-Day readiness lookup (cached 60 s)
@@ -161,15 +266,18 @@ export class TollgateProvider {
     return { status: 200, headers: { "x-tollgate-receipt": Buffer.from(receipt).toString("base64"), "x-tollgate-cumulative": cumulative.toString() }, body: bodyStr };
   }
 
-  /** Settle the highest voucher seen for `channelId` (provider's EVM tx; needs a window that admits the escrow). */
-  async claimLatest(channelId: bigint): Promise<{ hash: Hex; gasEstimate: bigint } | undefined> {
+  /** Settle the highest voucher for `channelId` (provider's EVM tx; needs a window that admits the escrow). */
+  async claimLatest(channelId: bigint): Promise<{ hash: Hex; gasEstimate: bigint; cumulative: bigint } | undefined> {
     const v = this.latest.get(channelId.toString());
     if (!v) return undefined;
-    const args = [channelId, v.cumulative, `0x${Buffer.from(v.sig).toString("hex")}` as Hex] as const;
+    const info = (await publicClient.readContract({ address: this.opts.escrow, abi: escrowAbi, functionName: "channel", args: [channelId] })) as ChannelInfo;
+    if (info.closed || v.cumulative <= info.paid) return undefined; // nothing new to settle
+    const key = await this.pinnedKey(channelId, info);
+    const args = [channelId, v.cumulative, toHex(key), toHex(v.sig)] as const;
     const gasEstimate = await publicClient.estimateContractGas({ account: this.address, address: this.opts.escrow, abi: escrowAbi, functionName: "claim", args });
     const hash = await walletFor(this.opts.account).writeContract({ address: this.opts.escrow, abi: escrowAbi, functionName: "claim", args, gas: (gasEstimate * 13n) / 10n, ...FEES });
     const r = await publicClient.waitForTransactionReceipt({ hash });
     if (r.status !== "success") throw new Error(`claim reverted: ${hash}`);
-    return { hash, gasEstimate };
+    return { hash, gasEstimate, cumulative: v.cumulative };
   }
 }

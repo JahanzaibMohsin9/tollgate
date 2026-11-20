@@ -2,3 +2,7 @@
 node_modules/
 state.json
 agent-vouchers.json
+provider-vouchers.json
+state.v1.json
+live.out
+live.err

@@ -40,6 +40,13 @@ export async function accountFromEnv(name: string): Promise<UnifiedAccount> {
   return deriveUnifiedAccount(m, 0);
 }
 
+/** Account from a mnemonic that MUST already exist in the environment (never generates). */
+export async function requireAccount(name: string): Promise<UnifiedAccount> {
+  const m = process.env[name]?.trim();
+  if (!m) throw new Error(`missing env ${name}`);
+  return deriveUnifiedAccount(m, 0);
+}
+
 /** A hex secret in agent/.env under `name`; created with `make()` and stored (never printed) if missing. */
 export function secretFromEnv(name: string, make: () => string): string {
   let v = process.env[name]?.trim();

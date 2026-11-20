@@ -29,6 +29,7 @@ const transport = new StdioClientTransport({
     TOLLGATE_PROVIDER: providerAcc.evm,
     TOLLGATE_PROVIDER_URL: "http://127.0.0.1:8788",
     TOLLGATE_PRICE_WEI: PRICE.toString(),
+    TG_OWNER_EVM: owner.evm,
   },
 });
 const client = new Client({ name: "tollgate-mcp-demo", version: "0.1.0" });
