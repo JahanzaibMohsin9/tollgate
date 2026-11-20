@@ -2,23 +2,24 @@
 pragma solidity ^0.8.24;
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {PQSig} from "@pqc-forge/PQSig.sol";
 
 /// @title Tollgate ChannelEscrow
 /// @notice Pay-per-call payment channels for AI agents on QoreChain, secured by ML-DSA-87.
 ///
-///  - A payer (the owner's account, usually acting through a linked agent key whose spending rules
-///    cap per-tx and daily outflow) opens a channel to a provider with a native-QOR deposit.
-///  - The agent signs CUMULATIVE vouchers off-chain with its ML-DSA-87 key ("I have authorised at most N
-///    wei to this provider on this channel"). Thousands of calls cost no gas. The provider settles any time
-///    with the latest voucher: ONE on-chain verification for any number of calls.
-///  - Recipients: spending rules cannot restrict recipients, so the escrow does. A channel can only be
-///    opened to a provider the owner allowlisted with an ML-DSA-87 signature, which a prompt-injected
-///    agent cannot produce.
-///  - The voucher key is pinned (keccak of the registered key) at open; possession must be proven.
-///  - Exit: the payer starts an exit; the provider can still claim during the challenge period; then the
-///    remainder is refunded. A provider can also close early and refund the payer.
+///  - The OWNER approves (provider, voucher signer) pairs with an ML-DSA-87 signature. Spending rules cannot
+///    restrict recipients, so the escrow does: a prompt-injected agent can neither pay an unapproved provider
+///    nor pick its own voucher signer (e.g. the provider itself).
+///  - A payer (the owner's account, usually acting through a linked agent key bounded by on-chain spending
+///    rules) opens a channel with a native-QOR deposit. The approved voucher signer's registered ML-DSA-87 key
+///    (possession proven) is PINNED at open and emitted in ChannelOpened.
+///  - The agent signs CUMULATIVE vouchers off-chain. The provider settles any time with the latest one: ONE
+///    on-chain verification for any number of calls. Claims verify against the PINNED key (passed in calldata,
+///    checked against its hash), so rotating or deregistering the voucher account's key cannot void vouchers
+///    the provider already earned.
+///  - Exit: the payer starts it; the provider keeps `challengePeriod` to claim; then the rest is refunded.
 contract ChannelEscrow is ReentrancyGuard {
     using Strings for uint256;
     using Strings for address;
@@ -27,21 +28,29 @@ contract ChannelEscrow is ReentrancyGuard {
         address payer;
         address provider;
         address voucherSigner;
-        bytes32 keyHash; // keccak256 of the voucher signer's registered ML-DSA-87 public key, pinned at open
+        bytes32 keyHash; // keccak256 of the voucher signer's ML-DSA-87 public key, pinned at open
         uint128 deposit; // wei
-        uint128 paid; // wei, = latest settled cumulative voucher
+        uint128 paid; // wei, = latest settled cumulative voucher (capped at deposit)
         uint64 exitAt; // 0 = no exit pending
         bool closed;
     }
 
+    uint256 public constant MIN_CHALLENGE_PERIOD = 1 minutes;
+    uint256 public constant MAX_CHALLENGE_PERIOD = 30 days;
     uint256 public immutable challengePeriod;
     Channel[] private channels;
 
-    mapping(address owner => mapping(address provider => bool)) public providerAllowed;
+    /// owner => provider => approved voucher signer (address(0) = provider not allowed)
+    mapping(address owner => mapping(address provider => address)) public approvedSigner;
     mapping(address owner => uint256) public providerNonce;
+    /// payer => provider => latest channel id + 1 (0 = none). Logs emitted inside x/abstractaccount
+    /// MsgExecuteEVM are not indexed by eth_getLogs on QoreChain today, so agents look channels up here.
+    mapping(address payer => mapping(address provider => uint256)) private latestPlusOne;
 
-    event ProviderSet(address indexed owner, address indexed provider, bool allowed, uint256 nonce);
-    event ChannelOpened(uint256 indexed id, address indexed payer, address indexed provider, address voucherSigner, uint256 deposit);
+    event ProviderSet(address indexed owner, address indexed provider, address voucherSigner, uint256 nonce);
+    event ChannelOpened(
+        uint256 indexed id, address indexed payer, address indexed provider, address voucherSigner, uint256 deposit, bytes voucherKey
+    );
     event ToppedUp(uint256 indexed id, uint256 amount, uint256 deposit);
     event Claimed(uint256 indexed id, uint256 cumulative, uint256 amount);
     event ExitStarted(uint256 indexed id, uint64 exitAt);
@@ -49,6 +58,7 @@ contract ChannelEscrow is ReentrancyGuard {
 
     error InvalidSignature();
     error InvalidNonce(uint256 expected, uint256 got);
+    error SignatureExpired(uint256 deadline);
     error ProviderNotAllowed(address provider);
     error ZeroDeposit();
     error NotPayer();
@@ -57,40 +67,49 @@ contract ChannelEscrow is ReentrancyGuard {
     error ExitPending(uint256 id);
     error NoExitPending(uint256 id);
     error ChallengePeriodActive(uint64 exitAt);
-    error NotIncreasing(uint256 paid, uint256 cumulative);
-    error ExceedsDeposit(uint256 deposit, uint256 cumulative);
-    error VoucherKeyChanged(address voucherSigner);
+    error NotIncreasing(uint256 paid, uint256 due);
+    error WrongVoucherKey(uint256 id);
     error TransferFailed();
     error UnknownChannel(uint256 id);
+    error BadChallengePeriod(uint256 challengePeriod);
 
     constructor(uint256 challengePeriod_) {
+        if (challengePeriod_ < MIN_CHALLENGE_PERIOD || challengePeriod_ > MAX_CHALLENGE_PERIOD) {
+            revert BadChallengePeriod(challengePeriod_);
+        }
         challengePeriod = challengePeriod_;
     }
 
-    // ------------------------------------------------------------------ provider allowlist (owner, ML-DSA-87)
+    // ------------------------------------------------------------------ provider approval (owner, ML-DSA-87)
 
-    /// @notice Allow or disallow `provider` for `owner`, authorised by the owner's ML-DSA-87 signature over
-    ///         `providerText` (QoreSign message-signing-v1). Anyone may relay it.
-    function setProvider(address owner, address provider, bool allowed, uint256 nonce, bytes calldata ownerSig) external {
+    /// @notice Approve `provider` with `voucherSigner` (or revoke with voucherSigner = address(0)) for `owner`,
+    ///         authorised by the owner's ML-DSA-87 signature over `providerText`. Anyone may relay it.
+    function setProvider(address owner, address provider, address voucherSigner, uint256 nonce, uint256 deadline, bytes calldata ownerSig)
+        external
+    {
+        if (block.timestamp > deadline) revert SignatureExpired(deadline);
         uint256 expected = providerNonce[owner];
         if (nonce != expected) revert InvalidNonce(expected, nonce);
-        if (!PQSig.verifyMessageBy(owner, providerText(owner, provider, allowed, nonce), ownerSig)) revert InvalidSignature();
+        if (!PQSig.verifyMessageBy(owner, providerText(owner, provider, voucherSigner, nonce, deadline), ownerSig)) {
+            revert InvalidSignature();
+        }
         providerNonce[owner] = expected + 1;
-        providerAllowed[owner][provider] = allowed;
-        emit ProviderSet(owner, provider, allowed, nonce);
+        approvedSigner[owner][provider] = voucherSigner;
+        emit ProviderSet(owner, provider, voucherSigner, nonce);
     }
 
     // ------------------------------------------------------------------ channel lifecycle
 
-    /// @notice Open a channel to an allowlisted provider. Vouchers must be signed by `voucherSigner`'s
-    ///         registered ML-DSA-87 key (possession proven), which is pinned now.
-    function open(address provider, address voucherSigner) external payable returns (uint256 id) {
-        if (!providerAllowed[msg.sender][provider]) revert ProviderNotAllowed(provider);
+    /// @notice Open a channel to an owner-approved provider. The voucher signer is the one the owner approved.
+    function open(address provider) external payable returns (uint256 id) {
+        address voucherSigner = approvedSigner[msg.sender][provider];
+        if (voucherSigner == address(0)) revert ProviderNotAllowed(provider);
         if (msg.value == 0) revert ZeroDeposit();
-        bytes32 keyHash = keccak256(PQSig.registeredKey(voucherSigner));
+        bytes memory key = PQSig.registeredKey(voucherSigner); // registered, ML-DSA-87, possession proven
         id = channels.length;
-        channels.push(Channel(msg.sender, provider, voucherSigner, keyHash, uint128(msg.value), 0, 0, false));
-        emit ChannelOpened(id, msg.sender, provider, voucherSigner, msg.value);
+        channels.push(Channel(msg.sender, provider, voucherSigner, keccak256(key), SafeCast.toUint128(msg.value), 0, 0, false));
+        latestPlusOne[msg.sender][provider] = id + 1;
+        emit ChannelOpened(id, msg.sender, provider, voucherSigner, msg.value, key);
     }
 
     function topUp(uint256 id) external payable {
@@ -98,22 +117,22 @@ contract ChannelEscrow is ReentrancyGuard {
         if (msg.sender != c.payer) revert NotPayer();
         if (c.exitAt != 0) revert ExitPending(id);
         if (msg.value == 0) revert ZeroDeposit();
-        c.deposit += uint128(msg.value);
+        c.deposit = SafeCast.toUint128(uint256(c.deposit) + msg.value);
         emit ToppedUp(id, msg.value, c.deposit);
     }
 
-    /// @notice Settle the latest cumulative voucher. Anyone may submit it; funds always go to the provider.
-    function claim(uint256 id, uint256 cumulative, bytes calldata voucherSig) external nonReentrant {
+    /// @notice Settle a cumulative voucher (capped at the deposit). Anyone may submit; funds go to the provider.
+    /// @param voucherKey the ML-DSA-87 public key pinned at open (see ChannelOpened)
+    function claim(uint256 id, uint256 cumulative, bytes calldata voucherKey, bytes calldata voucherSig) external nonReentrant {
         Channel storage c = _live(id);
-        if (cumulative <= c.paid) revert NotIncreasing(c.paid, cumulative);
-        if (cumulative > c.deposit) revert ExceedsDeposit(c.deposit, cumulative);
-        bytes memory pk = PQSig.registeredKey(c.voucherSigner);
-        if (keccak256(pk) != c.keyHash) revert VoucherKeyChanged(c.voucherSigner);
-        if (!PQSig.verify(pk, voucherSig, PQSig.messageBytes(voucherText(id, cumulative)))) revert InvalidSignature();
+        if (keccak256(voucherKey) != c.keyHash) revert WrongVoucherKey(id);
+        if (!PQSig.verify(voucherKey, voucherSig, PQSig.messageBytes(voucherText(id, cumulative)))) revert InvalidSignature();
+        uint256 due = cumulative < c.deposit ? cumulative : c.deposit;
+        if (due <= c.paid) revert NotIncreasing(c.paid, due);
 
-        uint256 amount = cumulative - c.paid;
-        c.paid = uint128(cumulative);
-        emit Claimed(id, cumulative, amount);
+        uint256 amount = due - c.paid;
+        c.paid = uint128(due); // due <= deposit, which fits uint128
+        emit Claimed(id, due, amount);
         _send(c.provider, amount);
     }
 
@@ -122,11 +141,12 @@ contract ChannelEscrow is ReentrancyGuard {
         Channel storage c = _live(id);
         if (msg.sender != c.payer) revert NotPayer();
         if (c.exitAt != 0) revert ExitPending(id);
-        c.exitAt = uint64(block.timestamp + challengePeriod);
+        c.exitAt = SafeCast.toUint64(block.timestamp + challengePeriod);
         emit ExitStarted(id, c.exitAt);
     }
 
     /// @notice After the challenge period, refund the unclaimed deposit to the payer. Anyone may call.
+    /// @dev At exactly `exitAt` (and until someone finalizes) the provider can still claim: ties favour the provider.
     function finalizeExit(uint256 id) external nonReentrant {
         Channel storage c = _live(id);
         if (c.exitAt == 0) revert NoExitPending(id);
@@ -134,7 +154,7 @@ contract ChannelEscrow is ReentrancyGuard {
         _close(id, c);
     }
 
-    /// @notice The provider is done: close now and refund the payer (after claiming, if it wants).
+    /// @notice The provider is done: close now and refund the payer (claim first if it wants).
     function closeByProvider(uint256 id) external nonReentrant {
         Channel storage c = _live(id);
         if (msg.sender != c.provider) revert NotProvider();
@@ -142,6 +162,12 @@ contract ChannelEscrow is ReentrancyGuard {
     }
 
     // ------------------------------------------------------------------ views
+
+    /// @notice The most recent channel `payer` opened to `provider`.
+    function lastChannel(address payer, address provider) external view returns (bool exists, uint256 id) {
+        uint256 v = latestPlusOne[payer][provider];
+        return (v != 0, v == 0 ? 0 : v - 1);
+    }
 
     function channelCount() external view returns (uint256) {
         return channels.length;
@@ -154,6 +180,7 @@ contract ChannelEscrow is ReentrancyGuard {
 
     /// @notice The exact text an agent signs for a voucher (the `data` of QoreSign message-signing-v1).
     function voucherText(uint256 id, uint256 cumulative) public view returns (bytes memory) {
+        if (id >= channels.length) revert UnknownChannel(id);
         Channel storage c = channels[id];
         return bytes.concat(
             "Tollgate voucher v1\n",
@@ -165,16 +192,21 @@ contract ChannelEscrow is ReentrancyGuard {
         );
     }
 
-    /// @notice The exact text an owner signs to allow or disallow a provider.
-    function providerText(address owner, address provider, bool allowed, uint256 nonce) public view returns (bytes memory) {
+    /// @notice The exact text an owner signs to approve (voucherSigner != 0) or revoke (0) a provider.
+    function providerText(address owner, address provider, address voucherSigner, uint256 nonce, uint256 deadline)
+        public
+        view
+        returns (bytes memory)
+    {
         return bytes.concat(
             "Tollgate provider v1\n",
             "chain: ", bytes(block.chainid.toString()), "\n",
             "escrow: ", bytes(address(this).toHexString()), "\n",
             "owner: ", bytes(owner.toHexString()), "\n",
             "provider: ", bytes(provider.toHexString()), "\n",
-            "allowed: ", allowed ? bytes("true") : bytes("false"), "\n",
-            "nonce: ", bytes(nonce.toString())
+            "voucher signer: ", bytes(voucherSigner.toHexString()), "\n",
+            "nonce: ", bytes(nonce.toString()), "\n",
+            "valid until: ", bytes(deadline.toString())
         );
     }
 
