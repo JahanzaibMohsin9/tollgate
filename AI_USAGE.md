@@ -19,6 +19,19 @@ Built with **Claude Code** (Anthropic) as a pair programmer. A human developer c
 | Agent, provider, MCP (TypeScript) | drafted | reviewed; tested with MCP |
 | Threat model | drafted from test and live evidence | reviewed |
 
+## Independent review of the published code, and what it changed
+After the first publish, two separately prompted AI reviewers audited the repository: a jury perspective, and a security engineer who wrote proof-of-concept tests. Their findings, all fixed with regression tests:
+- **High (TG-1):** the payer could rotate the voucher account's ML-DSA key after receiving service, void every earned voucher and exit with a full refund. Claims now verify against the key **pinned at open** (passed in calldata, checked against its hash).
+- **A prompt-injected agent could name the provider as its own voucher signer.** The owner's ML-DSA approval now binds the (provider, voucher signer) pair, and approvals carry a deadline.
+- **Off chain:**
+  - the provider cached channel state forever and kept vouchers only in memory;
+  - the agent advanced its total on unpaid routes;
+  - the MCP server loaded the owner's mnemonic.
+
+  All are fixed: periodic state refresh, persisted vouchers and pinned keys, totals that advance only on consumption, and an address-only owner.
+
+The re-run on testnet then surfaced a **platform finding**: logs emitted inside x/abstractaccount `MsgExecuteEVM` are not indexed by `eth_getLogs`. An event-based exit watcher missed an exit, and 0.4 QOR of vouchers went unclaimed in that run. The watcher now polls channel state; the report shows the corrected run.
+
 ## Mistakes the process caught
 - A **BigInt serialisation crash** in the live script; the run was resumable, so no transactions were wasted.
 - The prompt-injection refusal showed a generic reason, so it was confirmed with `eth_call` (`ProviderNotAllowed`) instead of being assumed.
