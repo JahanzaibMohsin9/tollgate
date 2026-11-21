@@ -2,6 +2,8 @@
 
 Run at 2026-11-20T22:40:15.160Z. Reproduce: `cd agent && npm run live`.
 
+> **Explorer links:** [explore.qore.network](https://explore.qore.network) opens on **mainnet**. Click **Testnet** in its top bar once (it remembers the choice), then the links below resolve. EVM transactions are linked by their Cosmos transaction hash, because the explorer does not look up `0x` hashes; the link text keeps the EVM hash.
+
 | Role | Address | Holds |
 |---|---|---|
 | Owner (payer) | `0x8D1D8BCe31cd200587Ec853D10aB5aF45699459A` / `qor135wchn33e5sqtplvs573p26673tfj3v6flv2hv` | funds, ML-DSA-87 key, the spending rule |
@@ -12,7 +14,7 @@ Run at 2026-11-20T22:40:15.160Z. Reproduce: `cd agent && npm run live`.
 
 ## 1. Deploy ChannelEscrow (challenge period 120s)
 
-- ChannelEscrow at `0xc764E126AB277F9a1b46d45101A2F1Cf7BcdC408`: [`0xd7c5650c…`](https://explore.qore.network/tx/0xd7c5650ce867898dfaf359e22129afab61dc3d4bbfc2063d7163c305702e0049)
+- ChannelEscrow at `0xc764E126AB277F9a1b46d45101A2F1Cf7BcdC408`: [`0xd7c5650c…`](https://explore.qore.network/tx/AA17554384765DC89F2FABAD97CCBBE865BD3BF1F016CEC334E4D2E90322C812)
 
 ## 2. Accounts: fund, then register ML-DSA-87 keys with proof of possession
 
@@ -44,7 +46,7 @@ voucher signer: 0xc76b568737a209161d24317d66b42551749de243
 nonce: 0
 valid until: 1795218032
 ```
-- relayed `setProvider`: [`0x1cdaa153…`](https://explore.qore.network/tx/0x1cdaa153a5021ef9e3d94e390ac73fc7531707af4a35bcea4c613d76c05e9adc)
+- relayed `setProvider`: [`0x1cdaa153…`](https://explore.qore.network/tx/085750666977F53687DDAD5747FC4BB67E9E93028E3DC6F486B5A71872D8C49F)
 
 ## 5. The agent opens a 1.5 QOR channel *as the owner's account*: `MsgExecuteEVM` signed by the linked ed25519 key
 
@@ -72,7 +74,7 @@ cumulative wei: 1000000000000000
 ## 7. The provider settles the first 600 calls with ONE claim, inside a scoped EVM window
 
 - provider opens a scoped window (3 txs, `allowedTargets=[escrow]`): [`89816F9B94…`](https://explore.qore.network/tx/89816F9B94DDA2EA7459349AD430ABC30AFF5565914A122AD5E0E3F643418444)
-- claim(0.6 QOR) with the pinned voucher key: [`0x92f0e634…`](https://explore.qore.network/tx/0x92f0e634d53422b054d4f5e2135997aa0d8e7fc452434081c98fea0d968f529b). **Real gas ~310890** (`eth_estimateGas`) for 600 calls.
+- claim(0.6 QOR) with the pinned voucher key: [`0x92f0e634…`](https://explore.qore.network/tx/2EADA5A2C6B540E83157AB38FFF4299C27488BB8A3EB62E4C68E286F51945DC5). **Real gas ~310890** (`eth_estimateGas`) for 600 calls.
 - **400 more calls in 25.2 s**. Valid provider receipts so far: **1000/1000**. Agent total **1 QOR** (not yet settled: 0.4 QOR).
 
 ## 8. Attacks on the agent (prompt injection, compromised agent key, malicious provider)
@@ -87,9 +89,9 @@ cumulative wei: 1000000000000000
 ## 9. Exit: the agent starts it, the provider's watcher claims the unsettled calls during the challenge period, the rest is refunded
 
 - startExit via MsgExecuteEVM → **executed** (EVM gas 50689) [`253B7429E6…`](https://explore.qore.network/tx/253B7429E6A892C6C2349E068A5DE6D3060BF08562C3DF850198F550AB35263C)
-- provider watcher **auto-claimed** the last 400 calls: [`0x409b995d…`](https://explore.qore.network/tx/0x409b995d950b938e60868503e690699ad1ed62ba989cc0c7395671c259165a0f)
+- provider watcher **auto-claimed** the last 400 calls: [`0x409b995d…`](https://explore.qore.network/tx/325E2843AF65CCB3614DB464B38E26245D7EFEDD99DC94E9F704B10A07BD1054)
 - waiting for the 120s challenge period…
-- finalizeExit (anyone may call; relayed): [`0xd13cfbad…`](https://explore.qore.network/tx/0xd13cfbadfcc255e648c3652eb489eee8b4bad3832c45dd20af0bbac2303e29d9). Owner refunded **0.5 QOR**.
+- finalizeExit (anyone may call; relayed): [`0xd13cfbad…`](https://explore.qore.network/tx/A7F34C9928B76225E97AE49C3A11F84001480A49EC778C3729F8B51C6965CAD4). Owner refunded **0.5 QOR**.
 - **conservation:** paid 1 + refunded 0.5 = deposit 1.5 QOR.
 - **every one of the 1000 calls was paid** (1 QOR of signed vouchers) with **2 on-chain claims**.
 
