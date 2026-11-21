@@ -70,6 +70,8 @@ git clone --recursive https://github.com/JahanzaibMohsin9/tollgate && cd tollgat
 cd agent && npm ci
 npm run live        # full testnet lifecycle (needs a funded RELAYER_MNEMONIC in agent/.env; other accounts are generated)
 npm run mcp-demo    # the MCP flow
+npm run demo        # short live run on an open channel: 120 paid calls, then ONE claim
+npm run mcp-session # what a model sees over MCP (resumes the open channel)
 ```
 
 ### Use it from Claude (MCP)

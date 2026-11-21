@@ -48,6 +48,15 @@ const agent = new TollgateAgent({
   statePath: fileURLToPath(new URL("../agent-vouchers.json", import.meta.url)),
 });
 
+// Restart-safe: resume the owner's latest channel to this provider if it is still open (read from chain).
+if (channelId === undefined) {
+  const [exists, id] = (await publicClient.readContract({ address: escrow, abi: escrowAbi, functionName: "lastChannel", args: [ownerEvm, provider] })) as [boolean, bigint];
+  if (exists) {
+    const c = (await publicClient.readContract({ address: escrow, abi: escrowAbi, functionName: "channel", args: [id] })) as { closed: boolean; exitAt: bigint };
+    if (!c.closed && c.exitAt === 0n) channelId = id;
+  }
+}
+
 const text = (o: unknown) => ({ content: [{ type: "text" as const, text: typeof o === "string" ? o : JSON.stringify(o, null, 2) }] });
 
 const server = new McpServer({ name: "tollgate", version: "0.2.0" });
