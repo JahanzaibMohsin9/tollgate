@@ -1,5 +1,7 @@
 # Tollgate
 
+[![Built on QoreChain](https://build.qorechain.io/badge/tollgate.svg)](https://build.qorechain.io/p/tollgate)
+
 **Pay-per-call payment channels for AI agents on QoreChain, secured by ML-DSA-87.**
 
 > Build Before Q-Day · Post-Quantum AI Agents track
