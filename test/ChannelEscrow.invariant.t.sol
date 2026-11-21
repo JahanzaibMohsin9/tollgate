@@ -127,29 +127,21 @@ contract ChannelEscrowInvariantTest is Test, PqcForge {
         }
     }
 
-    /// forge-config: default.invariant.runs = 16
-    /// forge-config: default.invariant.depth = 24
     function invariant_paidNeverExceedsDeposit() public view {
         ChannelEscrow.Channel memory c = escrow.channel(id);
         assertLe(c.paid, c.deposit);
     }
 
-    /// forge-config: default.invariant.runs = 16
-    /// forge-config: default.invariant.depth = 24
     function invariant_paidIsMonotonic() public view {
         assertFalse(handler.ghostPaidDecreased());
     }
 
-    /// forge-config: default.invariant.runs = 16
-    /// forge-config: default.invariant.depth = 24
     function invariant_escrowHoldsExactlyWhatIsOwed() public view {
         ChannelEscrow.Channel memory c = escrow.channel(id);
         uint256 owed = c.closed ? 0 : c.deposit - c.paid;
         assertEq(address(escrow).balance, owed);
     }
 
-    /// forge-config: default.invariant.runs = 16
-    /// forge-config: default.invariant.depth = 24
     function invariant_conservation() public view {
         assertEq(handler.ghostToProvider() + handler.ghostRefunded() + address(escrow).balance, handler.ghostDeposited());
     }

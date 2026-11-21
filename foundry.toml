@@ -8,3 +8,8 @@ remappings = [
   "@pqc-forge/=lib/pqc-forge/src/",
   "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
 ]
+
+[invariant]
+runs = 64
+depth = 64
+fail_on_revert = false

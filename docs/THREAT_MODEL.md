@@ -36,7 +36,7 @@ The MCP server (`agent/src/mcp.ts`) is given the owner's **address only** (`TG_O
 | T15 | Q-Day: secp256k1 / ed25519 keys broken | Vouchers, receipts and approvals are all ML-DSA-87. The owner's account needs hybrid signatures. The agent's ed25519 key is a bounded, expiring, revocable sub-key. | Design. |
 | T16 | The precompile is unavailable (mainnet today) | `PQSig` fails closed. | Test: `test_failsClosedWithoutPrecompiles`. |
 | T17 | Reentrancy, truncation | `nonReentrant`, state changed before transfers, `SafeCast`, a bounded challenge period. | Tests: `test_revertingPayerOnlyBlocksItsOwnRefund`, `test_challengePeriodIsBounded`. |
-| T18 | Funds are not conserved | Stateful invariants: paid ≤ deposit, paid only grows, escrow balance = deposit − paid for an open channel, provider + refunds + balance = all deposits. | `ChannelEscrow.invariant.t.sol` (16 runs × 24 calls, real ML-DSA). |
+| T18 | Funds are not conserved | Stateful invariants: paid ≤ deposit, paid only grows, escrow balance = deposit − paid for an open channel, provider + refunds + balance = all deposits. | `ChannelEscrow.invariant.t.sol` (64 runs × 64 calls = 4,096 calls, real ML-DSA). |
 
 ## Residual risks (stated honestly)
 1. **Plain value transfers by a compromised agent key.** QoreChain spending rules cannot restrict *recipients*, and a rule-bound key may still send plain value. A fully compromised agent key can send up to the per-tx cap per transaction and the daily cap per day to any address. This was demonstrated live with 0.01 QOR, and **it is bounded by the caps**. Mitigations: keep the caps small; keep an operating float in the owner account; revoke the key on any anomaly. The chain also forces a re-link within 30 days.
