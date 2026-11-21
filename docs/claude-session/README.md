@@ -1,6 +1,6 @@
 # A real Claude session using Tollgate over MCP
 
-Recorded 2026-11-21 on qorechain-diana. Model: **claude-sonnet-5-5**, run headless with `claude -p`. The model could call only the three Tollgate MCP tools; every other tool was disallowed. The raw event stream is [`session.jsonl`](session.jsonl). The transcript below is generated from it unedited.
+Recorded 2026-11-21 on qorechain-diana. Model: **claude-sonnet-5-5**, run headless with `claude -p`. The model could call only the three Tollgate MCP tools; every other tool was disallowed. The raw event stream is [`session.jsonl`](session.jsonl). The transcript below is generated from it unedited. The raw stream keeps the messages, tool calls and results; local environment details (paths, installed plugins, session ids) are stripped.
 
 **What it shows**
 - **The model refuses a prompt injection** hidden in untrusted content (a 50 QOR channel and 75 paid calls), and tells the user instead of hiding it.
