@@ -3,6 +3,8 @@
 **Pay-per-call payment channels for AI agents on QoreChain, secured by ML-DSA-87.**
 
 > Build Before Q-Day · Post-Quantum AI Agents track
+>
+> **Demo video (2:38):** https://youtu.be/kXrFDJ1bq_0
 
 AI agents increasingly pay for APIs, data and inference **one call at a time**. Settling each call on chain is too expensive (PQ-402-style escrow costs about 253k gas *per request*), and handing an agent a normal wallet means trusting the model with your money.
 
