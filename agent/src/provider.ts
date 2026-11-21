@@ -20,7 +20,8 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { getAddress, hexToBytes, keccak256, toHex, type Address, type Hex } from "viem";
-import { FEES, NET, pqcKeyOf, publicClient, walletFor } from "./chain.ts";
+import { evmWindowCost, evmWindowStatus } from "@qorechain/evm";
+import { FEES, NET, openScopedWindow, pqcKeyOf, publicClient, sleep, walletFor } from "./chain.ts";
 import { escrowAbi } from "./escrow.ts";
 import { qoreSignBytes, receiptText, voucherText } from "./texts.ts";
 
@@ -57,6 +58,7 @@ export class TollgateProvider {
   private locks = new Map<string, Promise<unknown>>();
   private cache = new Map<string, { at: number; body: unknown }>();
   private unwatch?: () => void;
+  private retryAt = new Map<string, number>(); // channel -> earliest next auto-claim attempt (back-off after errors)
   /** Persisted entries that belong to other escrows: kept untouched so a redeploy never loses earned vouchers. */
   private foreign: Record<string, { cumulative: string; sig: string; key?: string }> = {};
   stats = { paidCalls: 0, rejected: 0, autoClaims: [] as Hex[] };
@@ -133,6 +135,7 @@ export class TollgateProvider {
       try {
         for (const [k, v] of this.latest) {
           // One failing channel (unknown id, RPC error, reverted claim) must not stop the others being watched.
+          if ((this.retryAt.get(k) ?? 0) > Date.now()) continue;
           try {
             const id = BigInt(k);
             const info = await this.channelState(id, true);
@@ -140,7 +143,8 @@ export class TollgateProvider {
             const r = await this.withLock(k, () => this.claimLatest(id));
             if (r) this.stats.autoClaims.push(r.hash);
           } catch (e) {
-            console.error(`exit watcher (channel ${k}):`, (e as Error).message);
+            this.retryAt.set(k, Date.now() + 30_000); // back off; the challenge period is minutes to days
+            console.error(`exit watcher (channel ${k}):`, (e as Error).message.split("\n")[0]);
           }
         }
       } finally {
@@ -284,7 +288,20 @@ export class TollgateProvider {
     return { status: 200, headers: { "x-tollgate-receipt": Buffer.from(receipt).toString("base64"), "x-tollgate-cumulative": cumulative.toString() }, body: bodyStr };
   }
 
-  /** Settle the highest voucher for `channelId` (provider's EVM tx; needs a window that admits the escrow). */
+  /**
+   * Make sure the provider's EVM window admits one more claim; if not, open a window scoped to the escrow
+   * (one hybrid-signed native tx). Found live: an auto-claim failed because the previous scoped window was used up.
+   */
+  private async ensureWindow() {
+    const perTx = evmWindowCost({ gas: 1_000_000n, maxFeePerGas: FEES.maxFeePerGas });
+    const w = await evmWindowStatus({ rest: NET.rest, address: this.opts.account.cosmos }).catch(() => undefined);
+    const scopedToEscrow = !!w && w.allowedTargets.map((t) => t.toLowerCase()).includes(this.opts.escrow.toLowerCase());
+    if (w?.live && w.remainingTxs > 0n && w.remainingBlocks > 10n && w.remainingValue >= perTx && (scopedToEscrow || w.allowedTargets.length === 0)) return;
+    await openScopedWindow(this.opts.account, { blocks: 600n, maxTxs: 3n, maxValueUqor: perTx * 3n, allowedTargets: [this.opts.escrow] });
+    await sleep(6000); // next block
+  }
+
+  /** Settle the highest voucher for `channelId` (provider's EVM tx; opens a scoped window first if needed). */
   async claimLatest(channelId: bigint): Promise<{ hash: Hex; gasEstimate: bigint; cumulative: bigint } | undefined> {
     const v = this.latest.get(channelId.toString());
     if (!v) return undefined;
@@ -293,6 +310,7 @@ export class TollgateProvider {
     const key = await this.pinnedKey(channelId, info);
     const args = [channelId, v.cumulative, toHex(key), toHex(v.sig)] as const;
     const gasEstimate = await publicClient.estimateContractGas({ account: this.address, address: this.opts.escrow, abi: escrowAbi, functionName: "claim", args });
+    await this.ensureWindow();
     const hash = await walletFor(this.opts.account).writeContract({ address: this.opts.escrow, abi: escrowAbi, functionName: "claim", args, gas: (gasEstimate * 13n) / 10n, ...FEES });
     const r = await publicClient.waitForTransactionReceipt({ hash });
     if (r.status !== "success") throw new Error(`claim reverted: ${hash}`);

@@ -161,3 +161,12 @@ In section 8 the chain refused the injection on the **daily cap**, because earli
 - the chain's spending rule **admitted** the call (0.5 QOR is within both caps), and the EVM execution **reverted**. The same call as `eth_call` from the owner reverts with **`ProviderNotAllowed`**: the attacker was never approved with the owner's ML-DSA-87 signature.
 - owner balance unchanged: **true** (the deposit never left the account; QoreChain charges the relayer the fee)
 
+## 12. A real Claude session over MCP (2026-11-21)
+
+Claude Sonnet 5.5, run headless with only the three Tollgate tools:
+- it ignored and reported a prompt injection;
+- the chain refused its 5 QOR open;
+- it opened channel 2 with 0.2 QOR and paid 3 calls with verified receipts;
+- the provider settled them with one claim.
+
+Full transcript and transaction links: [claude-session/README.md](claude-session/README.md).

@@ -38,6 +38,7 @@ Full run with every transaction linked: **[docs/TESTNET_RUN.md](docs/TESTNET_RUN
 | The provider forges a larger voucher | `WrongVoucherKey` |
 | Exit | paid 1 + refunded 0.5 = deposit 1.5 ✓ |
 | The same flow through **MCP** | open, 3 paid fetches with receipts verified; a 5 QOR attempt refused by the chain |
+| **A real Claude session** (Sonnet 5.5, headless, Tollgate tools only) | the model **refused a hidden prompt injection** and reported it; its 5 QOR open was **refused by the chain**; it opened 0.2 QOR itself, paid 3 calls with verified receipts, and one claim settled them. **[Transcript](docs/claude-session/README.md)** |
 
 ## How the category requirements are met
 | Requirement | Tollgate |

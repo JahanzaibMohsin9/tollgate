@@ -9,7 +9,8 @@
     "mcp": "tsx --env-file=.env src/mcp.ts",
     "mcp-demo": "tsx --env-file=.env scripts/mcp-demo.ts",
     "demo": "tsx --env-file=.env scripts/demo.ts",
-    "mcp-session": "tsx --env-file=.env scripts/mcp-session.ts"
+    "mcp-session": "tsx --env-file=.env scripts/mcp-session.ts",
+    "serve": "tsx --env-file=.env scripts/serve.ts"
   },
   "keywords": [],
   "author": "",
