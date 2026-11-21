@@ -28,7 +28,7 @@ The MCP server (`agent/src/mcp.ts`) is given the owner's **address only** (`TG_O
 | T7 | Replay of an old voucher | Claims must increase what is paid. The HTTP API refuses vouchers that are not above the last one. | Test: `test_olderVoucherCannotBeSettledAgain`. Live: replay gives HTTP 402. |
 | T8 | A stale owner approval is relayed much later | Approvals carry a `valid until` deadline and a sequential nonce; revoke by approving `voucherSigner = 0`. | Tests: `test_staleApprovalExpires`, `test_approvalCannotBeReplayed`, `test_ownerCanRevokeProvider`. |
 | T9 | A copied public key is registered under another address | `PQSig.registeredKey` requires `possessionProven`. | Test: `test_openRequiresVoucherKeyWithPossessionProof`. |
-| T10 | The payer exits to cheat the provider | The provider keeps the challenge period to claim; ties at `exitAt` favour the provider. The provider **polls the state of every channel it holds vouchers for and auto-claims** as soon as an exit starts. | Live run, step 9 (auto-claim). Tests: `test_exitLetsProviderClaimThenRefundsRest`, `test_claimAtExactExitAtStillWorks`. |
+| T10 | The payer exits to cheat the provider | The provider keeps the whole challenge period to claim, and can still claim at exactly `exitAt` until someone finalizes. If a `finalizeExit` is ordered before the claim in the block at `exitAt`, finalize wins (residual risk 7). The provider **polls the state of every channel it holds vouchers for and auto-claims** as soon as an exit starts. | Live run, step 9 (auto-claim). Tests: `test_exitLetsProviderClaimThenRefundsRest`, `test_claimAtExactExitAtStillWorks`. |
 | T11 | The provider disappears and funds lock up | The payer can `startExit`; after the challenge period anyone can `finalizeExit`, which refunds the remainder. | Live refund. Test: `test_silentProviderGetsNothingAfterExit`. |
 | T12 | The provider restarts and loses vouchers | Vouchers and pinned keys are written to disk **before** each response is sent. | Code (`vouchersPath`). |
 | T13 | The model calls an **unpaid route** and gets charged | The agent only advances its total when the provider confirms it consumed that exact voucher (`x-tollgate-cumulative`); the MCP tool only allows `/v1/` paths. | Live: `/health` charged nothing. |
@@ -45,3 +45,14 @@ The MCP server (`agent/src/mcp.ts`) is given the owner's **address only** (`TG_O
 4. **Availability:** the provider must be online during the challenge period (auto-claim). Use hours in production; the demo uses 120 s.
 5. **Platform finding:** logs emitted inside x/abstractaccount `MsgExecuteEVM` are **not indexed by `eth_getLogs`** on qorechain-diana today. Tollgate does not depend on them: it uses the `lastChannel` view and state polling.
 6. **Mainnet:** `abstractaccount` and the PQC precompiles are **testnet-only today**, and enabling them needs governance. Tollgate fails closed without them.
+7. **Tie at `exitAt`** (independent review, info). At exactly `exitAt`, both `claim` and `finalizeExit` are valid, so a finalize ordered first in that block refunds the payer. The provider has had the full challenge period before that, and the auto-claim fires within seconds of an exit starting. A future version would use `block.timestamp <= exitAt` in `finalizeExit`.
+8. **Approvals can't be cancelled by a transaction.** A signed but not yet relayed `setProvider` approval can only be superseded by signing another one for the same nonce, or by letting its deadline pass (approvals carry a deadline). A future version would add `invalidateProviderNonce()`, as PQ Permit has.
+9. **Agent state loss.** If the agent's `agent-vouchers.json` is lost after the provider accepted a voucher, the agent re-signs an amount the provider has already seen and gets a 402. No funds are at risk; the operator restores the file or reads `paid` on chain.
+10. **Receipts** bind provider, channel, amount and the body hash, but not the chain or escrow. That is enough for a single deployment; a future receipt format would add both.
+
+Off-chain hardening from the second independent review (commit after 2026-11-21), with offline tests in `agent/test/offline.test.ts` (`npm test`):
+- The provider keys its persisted vouchers by `escrow:channel`, so a redeploy can't mix them. It keeps other escrows' vouchers.
+- It re-checks a cached pinned key against the channel's `keyHash`.
+- One failing channel no longer stops the exit watcher.
+- The voucher file is replaced atomically.
+- The MCP server never passes unpaid or unverified provider responses to the model (provider text is untrusted input), and refuses to open a second channel while one is live, so deposits can't be stranded.

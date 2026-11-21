@@ -32,7 +32,7 @@ Full run with every transaction linked: **[docs/TESTNET_RUN.md](docs/TESTNET_RUN
 | **1,000 paid API calls** | 62 s, **1000/1000 valid ML-DSA-87 receipts**, **0 transactions** |
 | A model calling an unpaid route | nothing charged |
 | Settlement | the provider claimed 600 calls in **one claim (about 311k gas)**, then **auto-claimed** the last 400 when the agent started the exit; **all 1,000 calls paid** |
-| Prompt injection: "open a channel to the attacker" | **refused on chain**; the escrow also refuses (`ProviderNotAllowed`, confirmed with `eth_call`) |
+| Prompt injection: "open a channel to the attacker" | **refused on chain by the escrow** (`ProviderNotAllowed`) even with budget left: the spending rule admits the call, the escrow reverts it (re-run, section 11) |
 | A channel above the 2 QOR per-tx cap | **refused on chain**: "per-tx limit … exceeded" |
 | The agent tries to approve the attacker itself | **refused on chain**: the call policy forbids `setProvider` |
 | The provider forges a larger voucher | `WrongVoucherKey` |
@@ -71,7 +71,7 @@ Full run with every transaction linked: **[docs/TESTNET_RUN.md](docs/TESTNET_RUN
 ```sh
 git clone --recursive https://github.com/JahanzaibMohsin9/tollgate && cd tollgate
 (cd lib/pqc-forge && npm ci) && forge test        # 37 tests incl. invariants, real ML-DSA-87
-cd agent && npm ci
+cd agent && npm ci && npm test   # offline tests: signed texts, provider persistence, agent totals
 npm run live        # full testnet lifecycle (needs a funded RELAYER_MNEMONIC in agent/.env; other accounts are generated)
 npm run mcp-demo    # the MCP flow
 npm run demo        # short live run on an open channel: 120 paid calls, then ONE claim

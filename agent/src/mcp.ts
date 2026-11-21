@@ -84,6 +84,13 @@ server.tool(
   "Open a new pay-per-call channel to the configured provider with a QOR deposit. Spends from the owner's account through the linked agent key; the chain enforces the owner's per-transaction and daily limits, and only owner-approved providers can be paid.",
   { deposit_qor: z.string().regex(/^\d+(\.\d+)?$/).describe('Deposit in QOR, e.g. "0.2"') },
   async ({ deposit_qor }) => {
+    // One channel at a time: opening another would strand the first deposit (there is no exit tool for the model).
+    if (channelId !== undefined) {
+      const c = (await publicClient.readContract({ address: escrow, abi: escrowAbi, functionName: "channel", args: [channelId] })) as { closed: boolean; exitAt: bigint };
+      if (!c.closed && c.exitAt === 0n) {
+        return text({ opened: false, reason: `channel ${channelId} is still open; keep using it (tollgate_status shows what is left). Only the owner can exit it.` });
+      }
+    }
     const out = await agent.openChannel(provider, parseEther(deposit_qor));
     if (!out.result.success || out.channelId === undefined) {
       return text({ opened: false, refused_by_chain: out.result.reason || out.result.vmError, tx: out.txHash });
@@ -101,8 +108,9 @@ server.tool(
     if (channelId === undefined) return text("No channel yet. Use tollgate_open_channel first.");
     if (!path.startsWith("/v1/")) return text("Only paid /v1/ endpoints of the configured provider are allowed.");
     const r = await agent.fetch(`${providerUrl}${path}`, { id: channelId, provider, priceWei });
-    if (!r.ok) return text({ ok: false, status: r.status, reason: r.reason, body: r.body });
-    if (!r.receiptValid) return text({ ok: false, paid_total_qor: formatEther(r.cumulative), reason: "provider receipt did NOT verify: do not trust this response", body: r.body });
+    // Unpaid or unverified responses are NOT passed to the model: provider text is untrusted input (prompt injection).
+    if (!r.ok) return text({ ok: false, status: r.status, reason: r.reason });
+    if (!r.receiptValid) return text({ ok: false, paid_total_qor: formatEther(r.cumulative), reason: "provider receipt did NOT verify; the response was discarded" });
     return text({ ok: true, receipt_verified: true, paid_total_qor: formatEther(r.cumulative), body: JSON.parse(r.body) });
   },
 );

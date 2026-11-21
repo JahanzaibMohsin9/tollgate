@@ -17,7 +17,7 @@
 import { mldsa87 } from "@qorechain/pqc";
 import type { UnifiedAccount } from "@qorechain/sdk";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { getAddress, hexToBytes, keccak256, toHex, type Address, type Hex } from "viem";
 import { FEES, NET, pqcKeyOf, publicClient, walletFor } from "./chain.ts";
@@ -57,15 +57,25 @@ export class TollgateProvider {
   private locks = new Map<string, Promise<unknown>>();
   private cache = new Map<string, { at: number; body: unknown }>();
   private unwatch?: () => void;
+  /** Persisted entries that belong to other escrows: kept untouched so a redeploy never loses earned vouchers. */
+  private foreign: Record<string, { cumulative: string; sig: string; key?: string }> = {};
   stats = { paidCalls: 0, rejected: 0, autoClaims: [] as Hex[] };
 
   constructor(private readonly opts: ProviderOptions) {
     this.address = getAddress(opts.account.evm);
     if (opts.vouchersPath && existsSync(opts.vouchersPath)) {
+      // Entries are keyed "<escrow>:<channelId>" so vouchers of different escrows never mix. Legacy files keyed
+      // by channel id only were written for a single escrow and are read as this one's.
       const saved = JSON.parse(readFileSync(opts.vouchersPath, "utf8")) as Record<string, { cumulative: string; sig: string; key?: string }>;
+      const mine = opts.escrow.toLowerCase();
       for (const [k, v] of Object.entries(saved)) {
-        this.latest.set(k, { cumulative: BigInt(v.cumulative), sig: Uint8Array.from(Buffer.from(v.sig, "base64")) });
-        if (v.key) this.keys.set(k, Uint8Array.from(Buffer.from(v.key, "base64")));
+        const [escrow, id] = k.includes(":") ? k.split(":") : [mine, k];
+        if (escrow.toLowerCase() !== mine) {
+          this.foreign[k] = v;
+          continue;
+        }
+        this.latest.set(id, { cumulative: BigInt(v.cumulative), sig: Uint8Array.from(Buffer.from(v.sig, "base64")) });
+        if (v.key) this.keys.set(id, Uint8Array.from(Buffer.from(v.key, "base64")));
       }
     }
   }
@@ -76,12 +86,16 @@ export class TollgateProvider {
 
   private persist() {
     if (!this.opts.vouchersPath) return;
-    const out: Record<string, { cumulative: string; sig: string; key?: string }> = {};
+    const out: Record<string, { cumulative: string; sig: string; key?: string }> = { ...this.foreign };
+    const mine = this.opts.escrow.toLowerCase();
     for (const [k, v] of this.latest) {
       const key = this.keys.get(k);
-      out[k] = { cumulative: v.cumulative.toString(), sig: Buffer.from(v.sig).toString("base64"), ...(key ? { key: Buffer.from(key).toString("base64") } : {}) };
+      out[`${mine}:${k}`] = { cumulative: v.cumulative.toString(), sig: Buffer.from(v.sig).toString("base64"), ...(key ? { key: Buffer.from(key).toString("base64") } : {}) };
     }
-    writeFileSync(this.opts.vouchersPath, JSON.stringify(out));
+    // Atomic replace: a crash mid-write must never leave a truncated file (that would lose every voucher).
+    const tmp = `${this.opts.vouchersPath}.tmp`;
+    writeFileSync(tmp, JSON.stringify(out));
+    renameSync(tmp, this.opts.vouchersPath);
   }
 
   async listen(): Promise<number> {
@@ -118,14 +132,17 @@ export class TollgateProvider {
       busy = true;
       try {
         for (const [k, v] of this.latest) {
-          const id = BigInt(k);
-          const info = await this.channelState(id, true);
-          if (info.closed || info.exitAt === 0n || v.cumulative <= info.paid) continue;
-          const r = await this.withLock(k, () => this.claimLatest(id));
-          if (r) this.stats.autoClaims.push(r.hash);
+          // One failing channel (unknown id, RPC error, reverted claim) must not stop the others being watched.
+          try {
+            const id = BigInt(k);
+            const info = await this.channelState(id, true);
+            if (info.closed || info.exitAt === 0n || v.cumulative <= info.paid) continue;
+            const r = await this.withLock(k, () => this.claimLatest(id));
+            if (r) this.stats.autoClaims.push(r.hash);
+          } catch (e) {
+            console.error(`exit watcher (channel ${k}):`, (e as Error).message);
+          }
         }
-      } catch (e) {
-        console.error("exit watcher:", (e as Error).message);
       } finally {
         busy = false;
       }
@@ -171,7 +188,8 @@ export class TollgateProvider {
   private async pinnedKey(id: bigint, info: ChannelInfo): Promise<Uint8Array> {
     const k = id.toString();
     const known = this.keys.get(k);
-    if (known) return known;
+    if (known && keccak256(toHex(known)) === info.keyHash) return known; // re-checked: a stale cache never decides
+    this.keys.delete(k);
     // Fast path: the voucher account's current registry key, if it is still the pinned one.
     const st = await pqcKeyOf(info.voucherSigner);
     let key: Hex | undefined = st.registered && keccak256(st.pubkey) === info.keyHash ? st.pubkey : undefined;

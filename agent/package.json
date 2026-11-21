@@ -4,7 +4,7 @@
   "description": "Tollgate: agent client, provider server and MCP tool for ML-DSA-87 payment channels on QoreChain",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --import tsx --test test/offline.test.ts",
     "live": "tsx --env-file=.env scripts/live.ts",
     "mcp": "tsx --env-file=.env src/mcp.ts",
     "mcp-demo": "tsx --env-file=.env scripts/mcp-demo.ts",

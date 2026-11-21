@@ -23,3 +23,5 @@ jobs:
           node-version: 22
       - run: npm ci && node --import tsx --input-type=module -e "await import('./src/texts.ts'); await import('./src/escrow.ts'); console.log('agent modules load')"
         working-directory: agent
+      - run: npm test
+        working-directory: agent
