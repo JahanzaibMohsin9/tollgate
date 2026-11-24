@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@qorechain/pqc": "^0.2.3",
+    "@qorechain/qoresign": "^0.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "viem": "~2.53.1"

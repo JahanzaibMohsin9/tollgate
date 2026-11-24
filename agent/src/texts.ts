@@ -1,6 +1,7 @@
 // Byte-exact mirrors of ChannelEscrow.voucherText / providerText, plus the provider receipt text.
 // All are signed as QoreSign message-signing-v1: "qorechain-msg-v1|qorechain-diana|" + text.
-import { concat, toBytes, type Address } from "viem";
+import { messagePqSignBytes } from "@qorechain/qoresign";
+import { type Address } from "viem";
 
 const lower = (a: string) => a.toLowerCase();
 
@@ -40,5 +41,5 @@ export function receiptText(p: { provider: Address; channelId: bigint; cumulativ
   ].join("\n");
 }
 
-export const qoreSignBytes = (text: string, cosmosChainId = "qorechain-diana") =>
-  concat([toBytes(`qorechain-msg-v1|${cosmosChainId}|`), toBytes(text)]);
+/** QoreSign message-signing-v1, built by the official @qorechain/qoresign package. */
+export const qoreSignBytes = (text: string, cosmosChainId = "qorechain-diana") => messagePqSignBytes(cosmosChainId, text);

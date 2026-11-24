@@ -1,7 +1,7 @@
+import { messagePqSignBytes } from "@qorechain/qoresign";
 import {
   BaseError,
   ContractFunctionRevertedError,
-  concat,
   createPublicClient,
   defineChain,
   http,
@@ -105,8 +105,7 @@ export const voucherText = (channelId: bigint, provider: Address, cumulativeWei:
   ].join("\n");
 
 /** QoreSign message-signing-v1: the bytes an ML-DSA-87 key signs for a given text. */
-export const qoreSignBytes = (text: string | Uint8Array) =>
-  toHex(concat([toBytes("qorechain-msg-v1|qorechain-diana|"), typeof text === "string" ? toBytes(text) : text]));
+export const qoreSignBytes = (text: string | Uint8Array) => toHex(messagePqSignBytes("qorechain-diana", text));
 
 /** Name of the custom error a call reverts with, "OK" if it succeeds. */
 export async function outcome(p: Promise<unknown>): Promise<string> {

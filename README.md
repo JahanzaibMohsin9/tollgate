@@ -51,7 +51,7 @@ Full run with every transaction linked: **[docs/TESTNET_RUN.md](docs/TESTNET_RUN
 | **Smart-account spending rules** | `MsgUpdateSpendingRules` + `MsgRegisterAuthenticator` (one owner-signed tx): `perTxLimit` 2 QOR, `dailyLimit` 5 QOR, `allowedDenoms: [uqor]`, `allowedEvmCalls` = 4 escrow selectors. The agent spends through `MsgExecuteEVM`, using its own authenticator nonce (`/auth_nonce`). |
 | **Scoped EVM window** | The provider settles inside a window with `allowedTargets=[escrow]`, 3 txs and a value cap. The owner never needs a window. |
 | **Tx, value, duration and target limits** | Window: blocks (duration), max txs, max value, allowed targets. Rule: per-tx and daily value, call allowlist, key expiry. Escrow: deposit cap, approval deadline, challenge period (bounded from 1 minute to 30 days). |
-| **Authenticated messaging** | ML-DSA-87 (QoreSign message-signing-v1) is used for agent vouchers, provider receipts and owner approvals. Every signed text is byte-identical to the contract's `voucherText` / `providerText`, checked live. |
+| **Authenticated messaging** | ML-DSA-87 (QoreSign message-signing-v1) is used for agent vouchers, provider receipts and owner approvals. The signed bytes are built by the official [`@qorechain/qoresign`](https://www.npmjs.com/package/@qorechain/qoresign) (`messagePqSignBytes`), in the agent and on the demo page. Every signed text is byte-identical to the contract's `voucherText` / `providerText`, checked live. |
 
 ## Engineering notes
 - **37 Foundry tests with real ML-DSA-87** via [pqc-forge](https://github.com/JahanzaibMohsin9/pqc-forge):
@@ -125,7 +125,7 @@ The agent's `.env` should hold **only** the agent's keys (`TG_AGENT_ED25519`, `T
 
 ## Credits
 - [pqc-forge](https://github.com/JahanzaibMohsin9/pqc-forge): real ML-DSA-87 in Foundry, plus the `PQSig` library.
-- `@qorechain/sdk`, `@qorechain/evm`, `@qorechain/pqc`, `@qorechain/mcp` (QoreChain's read-only MCP server), `@qorechain/qorescan` (CBOM), OpenZeppelin Contracts v5.4.0, forge-std, the Model Context Protocol SDK, viem and @noble/curves.
+- `@qorechain/sdk`, `@qorechain/evm`, `@qorechain/pqc`, `@qorechain/qoresign` (QoreSign message signing), `@qorechain/mcp` (QoreChain's read-only MCP server), `@qorechain/qorescan` (CBOM), OpenZeppelin Contracts v5.4.0, forge-std, the Model Context Protocol SDK, viem and @noble/curves.
 - Native-lane broadcast pattern adapted from qorechain/build-before-qday (Apache-2.0).
 - Pay-per-call over HTTP 402 is also explored by PQ-402. Tollgate's vouchers settle *many* calls per claim.
 

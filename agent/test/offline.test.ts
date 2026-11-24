@@ -10,7 +10,7 @@ import { test } from "node:test";
 import type { Address, Hex } from "viem";
 import { TollgateAgent } from "../src/agent.ts";
 import { TollgateProvider } from "../src/provider.ts";
-import { providerText, voucherText } from "../src/texts.ts";
+import { providerText, qoreSignBytes, voucherText } from "../src/texts.ts";
 
 const ESCROW = "0xc764E126AB277F9a1b46d45101A2F1Cf7BcdC408" as Address;
 const PROVIDER = "0xb518Ae67AE27122D4314366cC58F18813dc88868" as Address;
@@ -26,6 +26,12 @@ test("voucherText is byte-identical to the text the live run checked against the
     "cumulative wei: 1000000000000000",
   ].join("\n");
   assert.equal(voucherText({ chainId: 9800, escrow: ESCROW, channelId: 0n, provider: PROVIDER, cumulativeWei: 10n ** 15n }), expected);
+});
+
+test("signed bytes come from QoreSign (@qorechain/qoresign): message-signing-v1 framing, what pqcVerify is given", () => {
+  const text = voucherText({ chainId: 9800, escrow: ESCROW, channelId: 2n, provider: PROVIDER, cumulativeWei: 3_000_000_000_000_000n });
+  const bytes = qoreSignBytes(text);
+  assert.equal(Buffer.from(bytes).toString("utf8"), "qorechain-msg-v1|qorechain-diana|" + text);
 });
 
 test("providerText binds the voucher signer and is byte-identical to the live approval", () => {
