@@ -170,3 +170,14 @@ Claude Sonnet 5.5, run headless with only the three Tollgate tools:
 - the provider settled them with one claim.
 
 Full transcript and transaction links: [claude-session/README.md](claude-session/README.md).
+
+## 13. Claude with two MCP servers: Tollgate and QoreChain's `@qorechain/mcp` (2026-11-24)
+
+Claude Sonnet 5.5, headless, with the Tollgate tools and QoreChain's read-only MCP server:
+- `tollgate_preflight` (through `@qorechain/mcp`): owner balance 1.632 QOR, provider approved by the owner, provider and voucher signer ML-DSA-87 registered with possession proven, latest channel 2, nothing that would be refused;
+- the model confirmed the provider and the voucher signer itself with `qorechain.get_pq_status`;
+- a fresh 1 QOR channel was refused by Tollgate (channel 2 is still open); nothing was sent;
+- 2 paid calls on channel 2, both receipts verified; the voucher total went from 0.003 to 0.005 QOR with **no transaction**;
+- the paid answers agree with QoreChain's own `get_pq_status`.
+
+Transcript: [claude-session-2/README.md](claude-session-2/README.md). Live view of every channel and these transactions: https://tollgate-alpha.vercel.app

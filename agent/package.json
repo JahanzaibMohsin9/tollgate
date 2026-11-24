@@ -10,7 +10,11 @@
     "mcp-demo": "tsx --env-file=.env scripts/mcp-demo.ts",
     "demo": "tsx --env-file=.env scripts/demo.ts",
     "mcp-session": "tsx --env-file=.env scripts/mcp-session.ts",
-    "serve": "tsx --env-file=.env scripts/serve.ts"
+    "serve": "tsx --env-file=.env scripts/serve.ts",
+    "preflight": "tsx --env-file=.env scripts/preflight.ts",
+    "qorechain-mcp": "qorechain-mcp --network testnet",
+    "mcp-config": "tsx scripts/mcp-config.ts",
+    "cbom": "qorescan scan --name tollgate --network testnet --solidity ../src --solidity ../lib/pqc-forge/src --address qor135wchn33e5sqtplvs573p26673tfj3v6flv2hv --address qor1ca44dpeh5gy3v8fyx97kddp9296fmcjrau7q6t --address qor1k5v2ueawyufz6sc5xekvtrccsy7u3zrgxtxd7c --tls evm-testnet.qore.host:443 --tls api-testnet.qore.host:443 --out ../docs/cbom.json"
   },
   "keywords": [],
   "author": "",
@@ -22,10 +26,14 @@
     "@modelcontextprotocol/sdk": "^1.17.4",
     "@noble/curves": "^1.9.7",
     "@qorechain/evm": "^0.14.0",
+    "@qorechain/mcp": "^0.1.1",
     "@qorechain/pqc": "^0.2.3",
     "@qorechain/sdk": "^0.14.0",
     "tsx": "^4.19.2",
     "viem": "^2.53.1",
     "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@qorechain/qorescan": "^0.1.0"
   }
 }

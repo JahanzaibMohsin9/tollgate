@@ -1,0 +1,26 @@
+{
+  "name": "tollgate-web",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Tollgate live demo: the testnet escrow, its channels, attacks simulated against it, and an ML-DSA-87 voucher checker.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@qorechain/pqc": "^0.2.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "viem": "~2.53.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.0"
+  }
+}

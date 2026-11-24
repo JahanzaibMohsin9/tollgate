@@ -7,6 +7,10 @@
  *   tollgate_open_channel  open a channel to the configured provider AS the owner's account, through the linked
  *                          agent key (MsgExecuteEVM; the chain enforces the owner's spending rule)
  *   tollgate_fetch         a paid GET against the provider's /v1/ API, with its ML-DSA-87 receipt verified
+ *   tollgate_preflight     cross-check through QoreChain's own read-only MCP server (@qorechain/mcp): owner balance,
+ *                          provider approval, ML-DSA-87 status of the provider and voucher signer, latest channel.
+ *                          tollgate_open_channel runs it first, so calls the chain would refuse are not sent
+ *                          (each refused call still costs the relayer a fee).
  *
  * What the model CANNOT do, whatever it is told: pay a provider the owner did not approve with an ML-DSA-87
  * signature, choose the voucher signer, exceed the per-tx / daily caps, call anything but the escrow's
@@ -25,6 +29,7 @@ import { z } from "zod";
 import { TollgateAgent } from "./agent.ts";
 import { publicClient, requireAccount } from "./chain.ts";
 import { escrowAbi } from "./escrow.ts";
+import { QorechainReads, type Preflight } from "./qorechain.ts";
 
 const need = (k: string) => {
   const v = process.env[k]?.trim();
@@ -59,7 +64,20 @@ if (channelId === undefined) {
 
 const text = (o: unknown) => ({ content: [{ type: "text" as const, text: typeof o === "string" ? o : JSON.stringify(o, null, 2) }] });
 
-const server = new McpServer({ name: "tollgate", version: "0.2.0" });
+// QoreChain's read-only MCP server, started on first use. If it cannot start, Tollgate still works: the
+// preflight is a fee saver, and the chain enforces every limit on its own.
+let qc: Promise<QorechainReads> | undefined;
+async function preflight(depositWei?: bigint): Promise<Preflight | { unavailable: string }> {
+  try {
+    qc ??= QorechainReads.start("testnet");
+    return await (await qc).preflight({ escrow, owner: ownerEvm, provider, depositWei });
+  } catch (e) {
+    qc = undefined;
+    return { unavailable: `qorechain-mcp preflight failed (${(e as Error).message}); the chain still enforces every limit` };
+  }
+}
+
+const server = new McpServer({ name: "tollgate", version: "0.3.0" });
 
 server.tool("tollgate_status", "Show the payment channel: deposit, settled on chain, spent by vouchers, price per call.", {}, async () => {
   if (channelId === undefined) return text("No channel yet. Use tollgate_open_channel.");
@@ -91,7 +109,12 @@ server.tool(
         return text({ opened: false, reason: `channel ${channelId} is still open; keep using it (tollgate_status shows what is left). Only the owner can exit it.` });
       }
     }
-    const out = await agent.openChannel(provider, parseEther(deposit_qor));
+    const deposit = parseEther(deposit_qor);
+    const pre = await preflight(deposit);
+    if ("would_be_refused" in pre && pre.would_be_refused.length > 0) {
+      return text({ opened: false, refused_by_preflight: pre.would_be_refused, checked_with: pre.source, note: "nothing was sent" });
+    }
+    const out = await agent.openChannel(provider, deposit);
     if (!out.result.success || out.channelId === undefined) {
       return text({ opened: false, refused_by_chain: out.result.reason || out.result.vmError, tx: out.txHash });
     }
@@ -113,6 +136,13 @@ server.tool(
     if (!r.receiptValid) return text({ ok: false, paid_total_qor: formatEther(r.cumulative), reason: "provider receipt did NOT verify; the response was discarded" });
     return text({ ok: true, receipt_verified: true, paid_total_qor: formatEther(r.cumulative), body: JSON.parse(r.body) });
   },
+);
+
+server.tool(
+  "tollgate_preflight",
+  "Cross-check the payment setup through QoreChain's own read-only MCP server (@qorechain/mcp): the owner's balance, whether the owner approved the provider, the ML-DSA-87 status of the provider and the voucher signer, and the latest channel. Optionally checks a planned deposit. Read-only.",
+  { deposit_qor: z.string().regex(/^\d+(\.\d+)?$/).optional().describe('Planned deposit in QOR, e.g. "0.2"') },
+  async ({ deposit_qor }) => text(await preflight(deposit_qor ? parseEther(deposit_qor) : undefined)),
 );
 
 await server.connect(new StdioServerTransport());

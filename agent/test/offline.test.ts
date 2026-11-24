@@ -136,3 +136,16 @@ test("agent does not advance its total on 402 or on a route that did not consume
   assert.equal(cum, (10n ** 15n).toString());
   assert.equal(Buffer.from(sig, "base64").length, 4627);
 });
+
+test("QoreChain's MCP server (@qorechain/mcp) starts over stdio and exposes the read tools the preflight uses", async () => {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const { qorechainMcpBin } = await import("../src/qorechain.ts");
+  const client = new Client({ name: "tollgate-test", version: "0" });
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [qorechainMcpBin(), "--network", "testnet"], stderr: "ignore" }));
+  const names = (await client.listTools()).tools.map((t) => t.name);
+  await client.close();
+  for (const n of ["get_address_info", "get_pq_status", "read_contract"]) assert.ok(names.includes(n), `${n} missing`);
+  // It is read-only by design: no tool signs or broadcasts.
+  assert.ok(!names.some((n) => /sign|broadcast|send/.test(n)), names.join(","));
+});
