@@ -411,7 +411,7 @@ export function App() {
         </p>
         <div className="links">
           <a href={REPO}>GitHub</a>
-          <a href={VIDEO}>Video (2:38)</a>
+          <a href={VIDEO}>Video (2:58)</a>
           <a href={DOC("docs/TESTNET_RUN.md")}>Testnet run</a>
           <a href={DOC("docs/claude-session/README.md")}>Real Claude session</a>
           <a href={DOC("docs/THREAT_MODEL.md")}>Threat model</a>

@@ -8,7 +8,7 @@
 >
 > **Live demo:** https://tollgate-alpha.vercel.app: the testnet escrow and its channels, attacks you can run against it, and an ML-DSA-87 voucher checker.
 >
-> **Demo video (2:38):** https://youtu.be/kXrFDJ1bq_0
+> **Demo video (2:58):** https://youtu.be/dWqfsoy2q3o
 
 AI agents increasingly pay for APIs, data and inference **one call at a time**. Settling each call on chain is too expensive (PQ-402-style escrow costs about 253k gas *per request*), and handing an agent a normal wallet means trusting the model with your money.
 

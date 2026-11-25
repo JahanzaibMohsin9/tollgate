@@ -30,7 +30,7 @@ export const LIVE = {
 } as const satisfies Record<string, Address>;
 
 export const REPO = "https://github.com/JahanzaibMohsin9/tollgate";
-export const VIDEO = "https://youtu.be/kXrFDJ1bq_0";
+export const VIDEO = "https://youtu.be/dWqfsoy2q3o";
 export const DOC = (p: string) => `${REPO}/blob/main/${p}`;
 export const EXPLORER_TX = "https://explore.qore.network/tx/";
 export const PRICE_WEI = 1_000_000_000_000_000n; // 0.001 QOR per call in every recorded run
